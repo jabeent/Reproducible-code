@@ -1,0 +1,1157 @@
+---
+title: "pediatric_cancer_manuscript2"
+author: "Taiba"
+date: "2024-07-23"
+output: pdf_document
+---
+### Loading and processing pesticide data
+```{r}
+library(pacman)
+pacman::p_load(tidyverse, janitor,reshape2)
+```
+
+# 1 Loading original conus data 1992-2019
+```{r}
+
+load("~/Desktop/Jabbeen/jt_dissert/jt_dissert/pest_conus_v2.RDA")
+dat_conus$year<- as.numeric(as.character(dat_conus$year))
+```
+
+# Step 1 Filtering pesticides for NE from 1992- 2014 has 205956 obs and 6 variables
+```{r}
+dat_ne <- dat_conus |>
+  filter(state_fips_code == "31" & year %in% c(1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000,
+                                               2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009,
+                                               2010, 2011, 2012, 2013, 2014))
+
+  save(dat_ne, file = "pest_ne_v1.RDA")
+```
+
+# Step 2 creating variables median, temporal and spatial variables using original dataset 03/30/23
+```{r}
+load("pest_ne_v1.RDA")
+#median quantity and temporal coverage of chemicals applied
+median_pest <- dat_ne %>%
+  group_by(county_fips_code, compound) %>%
+  summarize(median_pest = median(pest_applied, na.rm = TRUE),
+            n_yrs_repeat = sum(!is.na(pest_applied)),
+            years = list(unique(year[!is.na(pest_applied)])))|>
+  mutate(pct_yrs= round((n_yrs_repeat/23)*100, 2))
+
+
+#spatial coverage using counties (percent counties with any compound applied per year)
+county_cover <- median_pest %>%
+  group_by(compound) %>%
+  summarize(county_cvr = n_distinct(county_fips_code[!is.na(median_pest)])) |>
+  mutate(pct_county_cvr = round((county_cvr/93)*100, 2))
+
+#join median_pest and county-cover
+dat_med_cnty_cvr<- left_join(median_pest, county_cover, by=c("compound"))
+
+#########################################################################
+
+# Final data set that has median pesticide applied, pct spatial and temporal coverage has 18730 obs and 8 variables
+
+chem_appl<- dat_med_cnty_cvr |>
+  mutate(years = gsub("(^c\\(|\\)$)", "", years))
+
+# save same file in rda format as backup
+save(chem_appl, file = "ne_chem_appl_spat_temp_cvr_v2.RDA")
+```
+
+#Step 3 chemical selection function
+```{r}
+compound_filter <- function(data, pct_yrs_thresh, pct_cnty_cvr_thresh) {
+  
+  # Filter the data based on pct_yrs threshold
+  data <- data %>% group_by(compound) %>% filter(mean(pct_yrs) >= pct_yrs_thresh)
+  
+  # Filter the data based on pct_cnty_cvr threshold
+  data <- data %>% group_by(compound) %>% filter(mean(pct_county_cvr) >= pct_cnty_cvr_thresh)
+  
+  # Return unique list of compounds that match the criteria as a dataframe
+  unique(data$compound) %>% as.data.frame()
+}
+```
+
+# Different percentages generate different lists
+```{r}
+#Use file: load("ne_chem_appl_spat_temp_cvr_v2.RDA")
+compound_filter<- compound_filter(chem_appl,90,100)
+compound_filter<- compound_filter |> rename(compound = ".")
+write_csv(compound_filter, "ne_chemical_list90_100.csv")
+
+```
+
+
+# Step 4 Creating a final subset of dataset with selected chemicals 
+```{r}
+# read in the dataset
+load("ne_chem_appl_spat_temp_cvr_v2.RDA")
+
+# Filter chem_appl based on the values in compound_filter
+chem_appl_filtered <- chem_appl %>%
+  filter(compound %in% compound_filter$compound)
+
+# Summarize pct_yrs by compound
+summary <- chem_appl_filtered %>%
+  group_by(compound) %>%
+  summarize(
+    mean_pct_yrs = mean(pct_county_cvr),
+    median_pct_yrs = median(pct_county_cvr),
+    max_pct_yrs = max(pct_county_cvr),
+    min_pct_yrs = min(pct_county_cvr),
+    n = n()
+  )
+
+save(chem_appl_filtered, file="ne_chem_appl_filtered_v3.RDA")
+```
+
+# Step 5 Grouping the pesticides by class and creating final dataset has 2976 obs and 9 variables
+```{r}
+
+# create a named vector of compound classes
+compound_classes <-list(Herbicide = c("2,4-D", "ATRAZINE","ALACHLOR","ACETOCHLOR","BROMOXYNIL", "CLETHODIM","CLOPYRALID", "DICAMBA","DIMETHENAMID","FLUMETSULAM","GLYPHOSATE", 
+                                      "IMAZETHAPYR","MCPA","METOLACHLOR","PARAQUAT", 
+                                      "METRIBUZIN","METSULFURON", "NICOSULFURON", "PICLORAM","PENDIMETHALIN","QUIZALOFOP", "SETHOXYDIM", "THIFENSULFURON","TRIASULFURON", "TRIFLURALIN"),
+                        
+                        Insecticide = c( "BIFENTHRIN" ,"CHLORPYRIFOS", "DIMETHOATE", "ESFENVALERATE","PERMETHRIN","TEFLUTHRIN","TERBUFOS"))
+
+# Create a new variable "class" in chem_appl_filtered
+chemi_class <- chem_appl_filtered %>% 
+  mutate(class = case_when(
+    compound %in% compound_classes[["Herbicide"]] ~ "Herbicide",
+    compound %in% compound_classes[["Insecticide"]] ~ "Insecticide",
+    TRUE ~ NA_character_
+  ))
+
+# Convert "class" variable to factor
+chemi_class$class <- as.factor(chemi_class$class)
+
+# Print the first few rows of the resulting dataset
+head(chemi_class)
+
+write_csv(chemi_class, "ne_final_chemv4.csv")
+
+# save same file in rda format as backup
+save(chemi_class, file = "ne_final_chem_v4_backup.RDA")
+
+```
+
+
+# Step 6 boxplots for each chemical
+```{r}
+load("ne_final_chem_v4_backup.RDA")
+
+ggplot(chemi_class, aes(y = compound, x = log(median_pest))) +
+  geom_boxplot() +
+  labs(title = "",
+       x = "Median pesticide applied (1992 - 2014) - Log scale", 
+       y = "") +
+  facet_grid(factor(class, levels=c("Herbicide", "Insecticide"))~ ., scales = "free_y", 
+             switch = "y", space = "free_y") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1, size = 10.5),
+        axis.text.y = element_text(size = 10.5),
+        strip.text = element_text(colour = "black", size = 10.5),
+        strip.text.x = element_text(colour = "black", size = 10.5),
+        strip.text.y = element_text(colour = "black", size = 7))
+
+
+ggsave("ne_chemical_box_plt.tiff", 
+       width = 6,height = 9,
+       dpi=300)
+```
+
+#Step 7 correlation matrix
+```{r}
+# pivot from long to wide format
+chemi_class_wide <- chemi_class[c(1:3)] %>%
+  pivot_wider(names_from = compound, values_from = median_pest)|>
+   mutate_at(vars(2:33), ~log10(.+0.0000001)) 
+
+write_csv(chemi_class_wide, "ne_final_chem_widev5.csv")
+
+# save same file in rda format as backup
+save(chemi_class_wide, file = "ne_final_chem_wide_v5_backup.RDA")
+```
+
+
+```{r}
+desired_order <- c("2,4-D", "Acetochlor", "Alachlor", "Atrazine", "Bromoxynil", 
+                   "Clethodim", "Clopyralid", "Dicamba", "Dimethenamid",
+                   "Flumetsulam", "Glyphosate", "Imazethapyr", "Mcpa",
+                   "Metolachlor", 
+                   "Metribuzin", "Metsulfuron", "Nicosulfuron", "Paraquat", "Pendimethalin",
+                   "Picloram", "Quizalofop", "Sethoxydim",
+                   "Thifensulfuron", 
+                   "Triasulfuron", "Trifluralin",
+                   "Bifenthrin", "Chlorpyrifos", "Dimethoate", "Esfenvalerate", "Permethrin", 
+                   "Tefluthrin", "Terbufos")
+
+chemi_class_wide <- read_csv("ne_final_chem_widev5.csv") |>
+  rename_all(~str_to_title(.))
+  
+#correlation matrix
+cormat<- round(x=cor(chemi_class_wide[c(2:33)], method = "spearman", 
+                     use= "complete.obs"), digits=2) |>
+  melt() |>
+  mutate_at(vars(Var1, Var2), ~factor(., levels = rev(desired_order)))
+
+
+ggplot(cormat, aes(x=Var2, y=rev(Var1), fill=value)) +
+  geom_tile(color="white")+
+  scale_fill_gradient2(low="red", high="blue", mid="white",
+                       midpoint=0,
+                       limit=c(-1,1), space= "Lab",
+                       name="Spearman Correlation | Pesticides applied in NE Counties (1992-2014)")+
+  geom_text(aes(label = round(value, 2)), size = 3, color = "black") + # Add text labels
+  theme_minimal()+
+  geom_hline(yintercept = 7.5, linetype = "dashed", color = "black", size=1.5)+
+  geom_vline(xintercept = 7.5, linetype = "dashed", color = "black", size=1.5)+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 12, hjust = 1),
+        axis.text.y = element_text(angle = 0, vjust = 1, size = 12, hjust = 1),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks = element_blank(),
+        legend.position = "bottom", legend.box = "horizontal")+
+  coord_fixed()
+
+ggsave("ne_chemical_correlations.tiff",
+       width=12, height= 10, dpi=300)
+```
+
+####################################################################################################################################
+##################################################################################################################################
+#Pesticide PCA Analysis
+
+```{r}
+library(pacman)
+pacman::p_load(tidyverse, janitor, tidymodels, factoextra, ggfortify, gridExtra, knitr, tmap, sp, sf, tigris, spdep)
+```
+
+```{r}
+ne_chemi_class <- read_csv("ne_final_chemv4.csv") |>
+  filter(compound != "TRIASULFURON" & compound != "METSULFURON" & compound != "MCPA" )
+```
+
+
+```{r}
+# pivot from long to wide format contains 93 obs with 29 variables
+ne_chemi_wide <- ne_chemi_class[c(1:3)] |>
+  pivot_wider(names_from = compound, values_from = median_pest) |>
+  select(-c(county_fips_code))|>
+ mutate_at(vars(1:29), ~log10(.+0.0000001))
+
+# Calculate principal components
+#scale: a logical value indicating whether the variables should be scaled to have unit variance before the analysis takes place
+pca.ln <- prcomp(ne_chemi_wide, scale = TRUE)
+#save(pca.ln, file = "ne_pca_ln.rda")
+```
+
+```{r}
+#load model object
+load("ne_pca_ln.rda")
+```
+
+```{r}
+eigenvalues_ln <- matrix(pca.ln$sdev^2) #eigenvalues
+perc_variance <- round(100*matrix(pca.ln$sdev^2/sum(pca.ln$sdev^2)),1) #variance
+
+#Summary table 
+eigenvalues_ln <- cbind(1:29, eigenvalues_ln, perc_variance) 
+colum_ln <- c("Principal Component", "Eigenvalues", "Percent Variance")
+eigenvalues_ln <- kable(eigenvalues_ln, col.names = colum_ln)
+eigenvalues_ln 
+```
+
+## Proportion of Variance Plots
+The first two components explained 87% of the variance 
+```{r PVE plots}
+#Plots the proportion of variance explained by each component (scree plot)
+pve.ln <- pca.ln$sdev^2/sum(pca.ln$sdev^2) #proportion of variance explain by each component
+ 
+#log-transformed data
+fviz_eig(pca.ln, main = "",
+         xlab = "Principal component",
+         ylim = c(0,50))
+
+ggsave("ne_pca_screeplot.tiff",
+       width=6, height= 6, dpi=300)
+```
+
+
+## Data Visualization of eigenvectors w/ Log-Transformed PCA Results
+Loadings are the weights that each chemical contribute to the component. Scores are the sum of loadings multiply by concentration of each chemical for each person. So you get a loading for each chemical in each component and also a total loading for each principal component (which is the sum of the chemical's loadings). You also get a score for each person (each observation) which is the sum of the scores of each chemical (loading*chemical concentration). So for each person (observation) you have a score for each principal component. Each principal component also has a score which is the sum of the scores within the principal component. 
+
+```{r}
+pca.ln.ld <- as.data.frame.matrix(pca.ln$rotation) ## rotation is the loadings variable within the pca output.
+pca.ln.ld$chem <- row.names(pca.ln.ld)
+
+#run compounds_classes from file 02.1_nebraska_pest_analysis.Rmd
+# Convert the list to a tibble and unnest the list
+loadings_pca <- pca.ln.ld |>
+  mutate(Group = case_when(
+    chem %in% unlist(compound_classes) & chem %in% compound_classes$Herbicide ~ "Herbicide",
+    chem %in% unlist(compound_classes) & chem %in% compound_classes$Insecticide ~ "Insecticide",
+    TRUE ~ NA_character_
+  ))
+
+plot_loadings_pca <- loadings_pca |> 
+  gather(key = "PC", value = "Loading", -chem, -Group) |> as_tibble()
+
+################################################################
+chem_order <- c("2,4-D", "ATRAZINE","ALACHLOR","ACETOCHLOR","BROMOXYNIL", "CLETHODIM","CLOPYRALID", "DICAMBA","DIMETHENAMID","FLUMETSULAM","GLYPHOSATE", 
+                                      "IMAZETHAPYR","METOLACHLOR","PARAQUAT", 
+                                      "METRIBUZIN", "NICOSULFURON", "PICLORAM","PENDIMETHALIN","QUIZALOFOP", "SETHOXYDIM", "THIFENSULFURON", "TRIFLURALIN","BIFENTHRIN" ,"CHLORPYRIFOS", "DIMETHOATE", "ESFENVALERATE","PERMETHRIN","TEFLUTHRIN","TERBUFOS")
+
+plot_loadings_pca |> 
+  filter(PC %in% c("PC1", "PC2", "PC3")) |> 
+  mutate(PC = as.factor(PC),
+         PC = fct_recode(PC, "PC 1" = "PC1",
+         "PC 2" = "PC2",
+         "PC 3" = "PC3"),
+         chem = factor(chem, levels = chem_order)) |> 
+  ggplot(aes(x = chem, 
+             y = Loading, 
+             fill=Group)) + 
+  geom_col() +
+  facet_wrap(~ PC) + 
+  theme_bw() + 
+  theme(legend.position = "bottom", 
+        axis.text.x = element_text(angle = 90, hjust = 1),
+        strip.background = element_rect(fill = "white")) +
+  geom_hline(yintercept = 0, linewidth = 0.2) +
+  labs(x = "Chemicals",
+       y = "Loadings")
+
+ggsave("ne_pca_loadings.tiff",
+       width=10, height= 7, dpi=300)
+```
+
+#Extracting the first principal component with highest variance for mapping
+```{r}
+new_index_withpc1<- data.frame(pca.ln$x[,1])
+
+# saving pc1 
+#write_csv(new_index_withpc1, "ne_index_scores.csv")
+```
+
+#combine index variables with chemicals applied data
+```{r}
+ne_chem_mapping <- ne_chemi_class[c(1:3)] |>
+  pivot_wider(names_from = compound, values_from = median_pest)|>
+  mutate_at(vars(2:30), ~log10(.+0.0000001))
+
+# final file for mapping
+ne_dat_map<- cbind(ne_chem_mapping, new_index_withpc1)
+write_csv(ne_dat_map, "ne_mapping_dat_final.csv")
+
+```
+
+##########################################################################################
+############################################################################################
+# Spatial analysis
+```{r}
+ne_counties <- counties(state = "ne", cb = FALSE, resolution = "500k", year = "2010", class="sf") |>
+  clean_names()
+```
+
+
+```{r}
+dat<- read_csv("ne_mapping_dat_final.csv") |>
+  rename(countyfp10="county_fips_code", pc1= "pca.ln.x...1.") |>
+  mutate(countyfp10 = str_pad(as.character(countyfp10), width = 3, pad = "0"),
+         pc1= pc1*(-1)) #09/07/2023
+
+dat_fin<- left_join(ne_counties, dat, by="countyfp10")
+```
+
+#Producing maps
+```{r}
+# Load the viridis package
+library(viridis)
+library(tmap)
+
+# Define a custom color palette with Viridis shades
+num_colors <- 4  # Set the number of colors in the palette
+custom_palette <- viridis(num_colors)
+
+chem<- "pc1"
+
+# Modify your code to use the custom color palette
+w <- tm_shape(dat_fin) +
+  tm_polygons(col = chem,
+              breaks = quantile(dat_fin[[chem]], probs = c(0, .25, .5, .75, 1), na.rm = T),
+              legend.is.portrait = FALSE,
+              palette = custom_palette,  # Using the custom Viridis color palette
+              title = "pc1") +
+  tm_borders("gray90", alpha = 0.002) +
+  tm_text(text = "name10") +
+  tm_layout(legend.title.size = 0.8, legend.text.size = 0.6) +
+  tm_legend(position = c("left", "bottom"), frame = TRUE, stack = "vertical") +
+  tm_compass(position = c("right", "top")) 
+
+tmap_save(w, "ne_pc1_viridis_palette.tiff",
+          width = 12, height = 15, dpi = 150)
+
+```
+
+# Exploratory spatial data analysis (ESDA) - to perform this we are converting neighbors list object to spatial weights
+#spatial correlation- understanding spatial neighborhoods using poly2nb() and generating the spatial weights matrix using nb2listw() and specifying style ="B" produces binary weights, where neighbors are given the weight 1 and non-neighbors take the weight of 0. This style of weights is useful for producing neighborhood sums.
+
+# understanding spatial neighborhoods/ contiguity-based neighbors, used when geographic features are polygons. poly2nb(), is used for queen’s case neighbors, where all polygons that share at least one vertex are considered neighbors. This function take an sf object as an argument and produce a neighbors list object
+```{r}
+neighbors <- poly2nb(col_sp, queen = TRUE)
+
+summary(neighbors)
+```
+
+# Summary interpretation- On average, the counties in the CONUS area have 5.93 neighbors. The minimum number of neighbors in the dataset is 1 (there are 13 such tracts), and the maximum number of neighbors is 14 (the tract at row index 2697)
+
+# Calculating spatial weights
+```{r}
+col_sp <- as(dat_fin, "Spatial")
+col_nb <- poly2nb(col_sp) 
+col_listw <- nb2listw(col_nb, style = "B") # listw version of the neighborhood
+
+```
+
+# Spatial autocorrelation: The concept of spatial autocorrelation relates to Waldo Tobler’s famous “first law of geography,” which reads (Tobler 1970): Everything is related to everything else, but near things are more related than distant things.
+#spatial clustering- data values tend to be similar to neighboring data values
+
+# Global spatial autocorrelation using Moron's I using spdep package. It gives the relationship between observations and their neighbors 
+
+```{r}
+moran.test(dat_fin$pc1, listw = col_listw)
+```
+
+# Identifying clusters and spatial outliers with local indicators of spatial association (LISA), an extension of Global Moran's I statistic using localmoran_perm() function, implements LISA where statistical significance is calculated based on a conditional permutation-based approach. 
+
+```{r}
+set.seed(1983) #random number seed is set given that we are using the conditional permutation approach to calculating statistical significance
+
+dat_fin$scaled_pc1 <- as.numeric(scale(dat_fin$pc1)) #pc1 is converted to a z-score using scale(), which subtracts the mean from the estimate then divides by its standard deviation. This follows convention from GeoDa
+
+# LISA is computed with localmoran_perm() for the scaled value for pc1, using the contiguity-based spatial weights matrix. 999 conditional permutation simulations are used to calculate statistical significance, and the argument alternative = "two.sided" will identify both statistically significant clusters and statistically significant spatial outliers
+dfw_lisa <- localmoran_perm( 
+ dat_fin$scaled_pc1, 
+listw = col_listw, 
+  nsim = 999L, 
+  alternative = "two.sided"
+) %>%
+  as_tibble() %>%
+  set_names(c("local_i", "exp_i", "var_i", "z_i", "p_i",
+              "p_i_sim", "pi_sim_folded", "skewness", "kurtosis"))
+
+# attaching LISA data frame to the Census tract shapes after computing the lagged value for pc1. #spatial lag calculated using lag.listw(), it refers to the neighboring values of an observation given a spatial weights matrix
+
+dfw_lisa_df <- dat_fin %>%
+  select(geoid10, scaled_pc1) %>%
+  mutate(lagged_estimate = lag.listw(col_listw, scaled_pc1)) %>% 
+  bind_cols(dfw_lisa)
+
+#recode the data into appropriate categories for the LISA quadrant plot, using a significance level of p = 0.05
+
+dfw_lisa_clusters <- dfw_lisa_df %>% 
+  mutate(lisa_cluster = case_when(
+    p_i >= 0.05 ~ "Not significant",
+    scaled_pc1 > 0 & local_i > 0 ~ "High-high",
+    scaled_pc1 > 0 & local_i < 0 ~ "High-low",
+    scaled_pc1 < 0 & local_i > 0 ~ "Low-low",
+    scaled_pc1 < 0 & local_i < 0 ~ "Low-high"
+  ))
+
+#The LISA quadrant plot
+
+color_values <- c(`High-high` = "Yellow", 
+                  `High-low` = "pink", 
+                  `Low-low` = "purple", 
+                  `Low-high` = "lightblue", 
+                  `Not significant` = "white")
+
+ggplot(dfw_lisa_clusters, aes(x = scaled_pc1, 
+                              y = lagged_estimate,
+                              fill = lisa_cluster)) + 
+  geom_point(color = "black", shape = 21, size = 2) + 
+  theme_minimal() + 
+  geom_hline(yintercept = 0, linetype = "dashed") + 
+  geom_vline(xintercept = 0, linetype = "dashed") + 
+  scale_fill_manual(values = color_values) + 
+  labs(x = "PC 1 (z-score)",
+       y = "Spatial lag of PC 1 (z-score)",
+       fill = "Cluster type")
+
+ggsave("ne_pc1_lisa_clusters.tiff",
+          width = 12, height=12, dpi=150)
+
+```
+
+# Interpretation- Observations falling in the top-right quadrant represent “high-high” clusters. Statistically significant clusters - those with a p-value less than or equal to 0.05 - are colored red on the chart. The bottom-left quadrant also represents spatial clusters, but instead includes lower-pc1 tracts that are also surrounded by tracts with similarly low pc1. The top-left and bottom-right quadrants are home to the spatial outliers, where values are dissimilar from their neighbors.
+
+
+# Cluster map using ggplot2 and geom_sf(). Here observations are visualized in relationship to their cluster membership and statistical significance
+```{r}
+
+ggplot(dfw_lisa_clusters, aes(fill = lisa_cluster)) + 
+  geom_sf(size = 0.1) + 
+  theme_void() + 
+  scale_fill_manual(values = color_values) + 
+  labs(fill = "Cluster type")
+
+ggsave("ne_pc1_clusters_map.tiff",
+          width = 12, height=12, dpi=150)
+
+```
+
+
+####################################################################################################################################
+####################################################################################################################################
+
+```{r}
+library(pacman)
+pacman::p_load(tidyverse, janitor, stringr, zipcodeR, lubridate, tmap, sf, tigris)
+```
+
+
+#Reading pediatric cancer data
+```{r}
+ped_cancer <- read_csv("pediatric_cancer.csv") |>
+  clean_names()|>
+  mutate(zip9 = str_sub(zipdx, 1, 5)) |>
+  mutate(dob = format(ymd(dob), "%m/%d/%Y"))|>
+  select(-c(zipdx))
+```
+
+#Zipcode to county name
+```{r}
+zip_dat<- zipcodeR::search_state("NE") |> select(c(1,3,6)) |>
+  rename(zip9= "zipcode") |>
+  mutate(zip9=as.factor(zip9))
+
+ped_cancer<- ped_cancer |> left_join(zip_dat, by="zip9") 
+write_csv(ped_cancer, "ped_cancer_v1.csv")
+```
+
+
+#Aggregate pediatric cancer data by NE counties
+```{r}
+ped_cancer_v1< read_csv("ped_cancer_v1.csv")
+
+ped_cancer_v2<- ped_cancer_v1 |> 
+  group_by(county, dis2) |>
+  count() |>
+  pivot_wider(names_from = dis2, values_from = n, values_fill = 0) |>
+  clean_names()|>
+  mutate(total_can = rowSums(across(where(is.numeric)))) |>
+  drop_na()
+write_csv(ped_cancer_v2, "ped_cancer_v2.csv")
+```
+#######################################################################################################################################
+####################################################################################################################################
+# Getting social vulnerability data/processing from ACS 
+
+```{r}
+library(pacman)
+pacman::p_load(tidyverse, janitor, tidycensus, rmarkdown, knitr, stringr)
+# census_api_key("60cbacc5c89ceb76d50a175907d1a9af7a7f3a1b", install = TRUE)
+```
+
+```{r}
+decin_vars <- load_variables(2010,
+                      dataset="sf1", cache = TRUE)
+
+# Male pied vars: P012003, P012004, P012005, P012006, P012007, 
+# Female pied vars: P012027, P012028, P012029, P012030, P012031
+```
+
+#pediatric population 2010 decennial census - nebraska counties
+```{r}
+ped_popln <- get_decennial(
+  geography = "county", 
+  variables = c("P012003", "P012004", "P012005", "P012006", "P012007", "P012027", 
+                "P012028", "P012029", "P012030", "P012031"), 
+  state = "NE",
+  geometry = T,
+  year = 2010)
+
+```
+
+#aggregating pediatric popln
+```{r}
+# Aggregate values by variable1 and variable2
+ped_aggr <- ped_popln |>
+  select(GEOID, NAME, value) |>
+  group_by(GEOID, NAME) |>
+  summarize(ped_popln = sum(value)) |>
+  rename(county="NAME") |>
+  mutate(county = str_remove(county, ", Nebraska"))
+
+ped_popln_exp<- ped_aggr |>
+  as_tibble() |>
+  clean_names() |>
+  select(1:3)
+
+#pediatric population export
+write_csv(ped_popln_exp, "ped_popln_exp.csv")
+```
+
+#SDOH_pediatric_cancer_birth_defects
+```{r}
+#get list of variables from 2010-2014 census
+acs_variable_list<- load_variables(2014, "acs5", cache = T)
+ped_pop<- get_acs(geography = "county",
+                  state = "NE",
+                  year=2014,
+                  survey = "acs5",
+                  variables=c(mg1_pop= "B01001_003",mg2_pop= "B01001_004",mg3_pop= "B01001_005",mg4_pop= "B01001_006",mg5_pop= "B01001_007",
+                              fg1_pop= "B01001A_018",fg2_pop= "B01001A_019",fg3_pop= "B01001A_020",fg4_pop= "B01001A_021",fg5_pop= "B01001A_022",
+                              mg1_blk_pop= "B01001B_003",mg2_blk_pop= "B01001B_004",mg3_blk_pop= "B01001B_005",mg4_blk_pop= "B01001B_006",mg5_blk_pop= "B01001B_007",
+                              fg1_blk_pop= "B01001B_018",fg2_blk_pop= "B01001B_019",fg3_blk_pop= "B01001B_020",fg4_blk_pop= "B01001B_021",fg5_blk_pop= "B01001B_022",
+                              mg1_hisp_pop= "B01001I_003",mg2_hisp_pop= "B01001I_004",mg3_hisp_pop= "B01001I_005",mg4_hisp_pop= "B01001I_006",mg5_hisp_pop= "B01001I_007",
+                              fg1_hisp_pop= "B01001I_018",fg2_hisp_pop= "B01001I_019",fg3_hisp_pop= "B01001I_020",fg4_hisp_pop= "B01001I_021",fg5_hisp_pop= "B01001I_022",
+                              ssi_snap="B22002_003",
+                              no_hel_ins_mu6="B27001_005",no_hel_ins_m6_18="B27001_008",
+                              no_hel_ins_fu6="B27001_033",no_hel_ins_f6_18="B27001_036",
+                              foregin_born="B06012_013",
+                              poverty_100="B06012_002",
+                              sing_prnt_u6="B05009_013", sing_prnt_6_17="B05009_031",
+                              un_empl="B23007_013",
+                              education="B16010_002",
+                              langu="B06007_008",
+                              no_vehic="B08201_002",
+                              median_incom="B10010_001",
+                              hous_w_pedpop="B11005_002",hous_wo_pedpop="B11005_011"
+                              ),
+                  geometry = T,
+                  output = "wide") %>% clean_names()
+
+```
+
+```{r}
+#Total population
+ped_pop$m_pop <- as.numeric(ped_pop$mg1_pop_e+ ped_pop$mg2_pop_e+ ped_pop$mg3_pop_e+
+                              ped_pop$mg4_pop_e+ped_pop$mg5_pop_e)
+ped_pop$f_pop <- as.numeric(ped_pop$fg1_pop_e+ ped_pop$fg2_pop_e+ ped_pop$fg3_pop_e+
+                              ped_pop$fg4_pop_e+ped_pop$fg5_pop_e)
+
+```
+
+
+```{r}
+#Total households
+ped_pop$households<-as.numeric(ped_pop$hous_w_pedpop_e+ped_pop$hous_wo_pedpop_e)
+#Population by race
+ped_pop$m_blk_pop<-as.numeric(ped_pop$mg1_blk_pop_e+ped_pop$mg2_blk_pop_e+ped_pop$mg3_blk_pop_e+
+                                ped_pop$mg4_blk_pop_e+ped_pop$mg5_blk_pop_e)
+ped_pop$f_blk_pop<-as.numeric(ped_pop$fg1_blk_pop_e+ped_pop$fg2_blk_pop_e+ped_pop$fg3_blk_pop_e+
+                                ped_pop$fg4_blk_pop_e+ped_pop$fg5_blk_pop_e)
+ped_pop$m_hisp_pop<- as.numeric(ped_pop$mg1_hisp_pop_e+ped_pop$mg2_hisp_pop_e+ped_pop$mg3_hisp_pop_e+
+                                  ped_pop$mg4_hisp_pop_e+ped_pop$mg5_hisp_pop_e)
+ped_pop$f_hisp_pop<- as.numeric(ped_pop$fg1_hisp_pop_e+ped_pop$fg2_hisp_pop_e+ped_pop$fg3_hisp_pop_e+
+                                  ped_pop$fg4_hisp_pop_e+ped_pop$fg5_hisp_pop_e)
+
+
+#health insurance
+ped_pop$m_ins_cnt<-as.numeric(ped_pop$no_hel_ins_mu6e+ped_pop$no_hel_ins_m6_18e)
+ped_pop$f_ins_cnt<-as.numeric(ped_pop$no_hel_ins_fu6e+ped_pop$no_hel_ins_f6_18e)
+
+#single parent
+ped_pop$sing_prnt_cnt<- as.numeric(ped_pop$sing_prnt_u6e+ped_pop$sing_prnt_6_17e)
+
+write.csv(ped_pop,"cenus_api_extract.csv")
+```
+
+
+```{r}
+#START here
+dat<- ped_pop[c(1,2,64,73,75,81,83,85,87,95:105)]
+
+#calculating percentages - Exclusive to pediatric population
+dat$m_blk_pct<- as.numeric((dat$m_blk_pop/dat$m_pop)*100)
+dat$f_blk_pct<- as.numeric((dat$f_blk_pop/dat$f_pop)*100)
+dat$m_hisp_pct<- as.numeric((dat$m_hisp_pop/dat$m_pop)*100)
+dat$f_hisp_pct<- as.numeric((dat$f_hisp_pop/dat$f_pop)*100)
+dat$m_heal_ins_pct<- as.numeric((dat$m_ins_cnt/dat$m_pop)*100)
+dat$f_heal_ins_pct<- as.numeric((dat$f_ins_cnt/dat$f_pop)*100)
+dat$sing_pent_pct <- as.numeric(dat$sing_prnt_cnt/(dat$m_pop+dat$f_pop)*100)
+dat$ssi_snap_pct<- as.numeric((dat$ssi_snap_m/dat$households)*100)
+dat$vehicle_pct<- as.numeric((dat$no_vehic_e/dat$households)*100)
+#
+write.csv(dat, "ped_sdohProcessed.csv")
+
+# save same file in rda format as backup
+save(dat, file = "ped_sdohProcessed.RDA")
+```
+
+```{r}
+load("ped_sdohProcessed.RDA")
+```
+
+#removing geometry variable (as_tibble) and saving count variables separately for stratified analysis
+```{r}
+sdh <- dat |>
+  as_tibble()|>
+  select(c(1,11:20)) |>
+  rename(geoid10= "geoid")
+
+#
+sdh$geoid10 <- as.numeric(sdh$geoid10)
+
+#
+write.csv(sdh, "ped_sdohcount.csv")
+
+# save same file in rda format as backup
+save(sdh, file = "ped_sdohcount.RDA")
+```
+
+######################################################################################################################################
+#######################################################################################################################################
+
+#Join pediatric population data
+# run 04_acs_census before this step/ lines 558- 708
+```{r}
+ped_cancer_v3<- ped_cancer_v2 |>
+  left_join(ped_aggr, by="county")
+
+write_csv(ped_cancer_v3, "ped_cancer_v3.csv")
+```
+
+#pediatric cancer rate by county
+```{r}
+ped_cancer_v4<- ped_cancer_v3 |>
+  mutate(across(where(is.integer), as.numeric)) |>
+  mutate(across(1:12, ~ . / ped_popln)*100000)
+
+write_csv(ped_cancer_v4, "ped_cancer_v4.csv")
+```
+
+#barplot by cancer types
+```{r}
+dat_bx_plt<- read_csv("ped_cancer_v4.csv")  |>
+  pivot_longer(cols = -c(county, GEOID, geometry, ped_popln),
+               names_to = "cancer_type", values_to = "cancer_rate") |>
+  mutate(can_type_lable= substr(cancer_type, 1, 8))
+
+ggplot(dat_bx_plt, aes(x = cancer_rate, y = county)) +
+  geom_bar(stat = "identity") +
+  labs(title = "", x = "", y = "") +
+  theme_minimal()+
+  facet_grid(.~can_type_lable, scales = "free") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+# Map pediatric cancers
+```{r}
+dat<- read_csv("ped_cancer_v4.csv")  |>
+rename(geoid10="GEOID")
+dat$geoid10<- as.character(dat$geoid10)
+
+ne_counties <- counties(state = "ne", cb = FALSE, resolution = "500k", year = "2010", class="sf") |>
+  clean_names()
+
+#join ped cancer data with ne county shapefile
+dat_map<- left_join(ne_counties, dat, by="geoid10")
+
+tm_shape(dat_map)+
+  tm_polygons(col="total_can",
+              breaks=quantile(dat_map$total_can, 
+                              probs = c(0,.25,.5,.75,1), na.rm = T),
+              legend.is.portrait=T,
+              palette="viridis",
+              title="total cancer per 100,000 children")+
+  tm_borders() +
+  tm_borders(col = "blue", lwd = 2, alpha = 0.5) 
+```
+
+
+```{r}
+# Read the CSV data
+dat <- read_csv("ped_cancer_v4.csv")
+
+# Rename the "GEOID" column to "geoid10"
+dat <- dat %>% rename(geoid10 = GEOID)
+
+# Convert "geoid10" to character type
+dat$geoid10 <- as.character(dat$geoid10)
+
+# Get Nebraska counties shapefile
+ne_counties <- counties(state = "NE", cb = FALSE, resolution = "500k", year = 2010) |>
+  clean_names()
+
+# Join ped cancer data with NE county shapefile
+dat_map <- left_join(ne_counties, dat, by = "geoid10")
+
+# Extract county name from the "county" column and remove "county" from the name
+dat_map <- dat_map |>
+  mutate(county_name = str_remove(str_to_title(county), " County"))
+
+# Plot the map
+w <- tm_shape(dat_map) +
+  tm_polygons(col = "lymphomas_and_reticuloendothelial_neoplasms",
+              breaks = quantile(dat_map$lymphomas_and_reticuloendothelial_neoplasms, probs = c(0, 0.25, 0.5, 0.75, 1), na.rm = TRUE),
+              legend.is.portrait = TRUE,
+              palette = "viridis",
+              title = "Lymphoma and reticuloendothelial rate per 100,000 Children") +
+  tm_borders() +
+  tm_text(text = "county_name", size= 0.6) +
+  tm_borders(col = "blue", lwd = 2, alpha = 0.5)+
+   tm_compass(position = c("right", "top"))
+
+tmap_save(w, "ne_lymphoma_viridis_palette.tiff",
+          width = 12, height = 15, dpi = 150)
+```
+
+# Creating tables for journal/manuscript
+```{r}
+dat <- read_csv("ped_cancer_v1.csv")
+
+#
+dat1 <- dat %>% mutate (dis2 = as.character(dis2))
+
+# Create a table showing the numbers for each type of diagnosis and calculate frequency as percentage
+diagnosis_table <- dat1 %>%
+  group_by(dis2) %>%
+summarise(count = n()) %>%
+  mutate(frequency = (count / sum(count)) * 100) %>%
+    arrange(desc(count))
+
+# Print the table
+print(diagnosis_table)
+
+#
+write.csv(diagnosis_table, "Ped_can_type_table1.csv")
+
+#### Table for sdoh variables
+
+dat <- read_csv("ped_can_chem_sdoh_v8.csv")
+```
+
+#######################################################################################################################################
+######################################################################################################################################
+###Joining pediatric cancer and pesticide data
+
+```{r}
+library(pacman)
+pacman::p_load(tidyverse, janitor, stringr, zipcodeR, lubridate, tmap, sf, tigris)
+```
+
+# Joined using part 1 chemical data (90-100% selection criteria)
+```{r}
+dat<- read_csv("ped_cancer_v4.csv")  |>
+rename(geoid10="GEOID")
+dat$geoid10<- as.character(dat$geoid10)
+
+ne_counties <- counties(state = "ne", cb = FALSE, resolution = "500k", year = "2010", class="sf") |>
+  clean_names()
+
+#join ped cancer data with ne county shapefile
+dat_map<- left_join(ne_counties, dat, by="geoid10")
+
+# write_csv(dat_map, "ped_cancer_v5.csv")
+
+
+```
+
+
+```{r}
+dat_chem <- read_csv("ne_final_chem_widev5.csv") |>
+  rename(countyfp= "county_fips_code") |>
+  mutate(countyfp = str_pad(as.character(countyfp), width = 3, pad = "0")) 
+
+dat_can <- read_csv("ped_cancer_v5.csv") |>
+  drop_na(county)|>
+  select(- c("statefp10", "STATEFP","countyfp10", "name10","countyns10",  
+             "lsad10", "classfp10",
+             "mtfcc10", "csafp10", "cbsafp10", "metdivfp10", "funcstat10", 
+             "aland10", "awater10", "intptlat10", "intptlon10",
+             "geometry.x","geometry.y","namelsad10"))
+
+ #
+write_csv(dat_can, "ped_cancer_v6.csv")
+
+# Join datasets by matching county variables
+can_chem <-  full_join(dat_chem, dat_can, by = "countyfp")
+
+#
+write_csv(can_chem, "ped_can_chem_v7.csv")
+
+
+```
+
+#sdoh data with chemicals and cancer data for final analysis 07/14/23
+```{r}
+
+dat_svi <- load("ped_sdohProcessed.RDA") 
+
+sdoh <- dat |>
+  rename(geoid10= "geoid") |>
+  select(-c(3:20))
+
+ped_can <- read_csv("ped_can_chem_v7.csv") |>
+  mutate(geoid10 = paste0("31", countyfp))
+
+# joining pediatric cancer-pesticide data with sdoh data
+can_chem_sdoh <-  full_join(ped_can, sdoh, by= "geoid10")
+
+# 
+write_csv(can_chem_sdoh, "ped_can_chem_sdoh_v8.csv")
+```
+
+########################################################################################################################################
+#######################################################################################################################################
+# Mixture analysis using generalized weighted quantile sum regression model
+
+```{r}
+library(pacman)
+pacman::p_load(tidyverse, dplyr, janitor,gWQS)
+```
+
+#sdoh data
+```{r}
+#join variables: geoid10 and county name
+load("ped_sdohProcessed.RDA") |> as_tibble()
+
+sdoh <- dat |>
+  as_tibble() |>
+  rename(geoid10= "geoid") |>
+  select(-c(3:20)) |>
+  mutate_at(vars(3:11), ~ round(., 2)) |>
+  mutate(name = str_split_fixed(name, ", ", 2)[, 1])|>
+  rename(county= "name")
+
+rm(dat)
+```
+
+#pediatric population
+```{r}
+ped_pln<- read_csv("ped_popln_exp.csv") 
+```
+
+#pediatric cancer data
+```{r}
+ped_can_count<- read_csv("ped_cancer_v3.csv") |>
+  select(c(1:13))
+```
+
+#join sdoh with outcomes
+```{r}
+sdoh_outcms <- sdoh |>
+  full_join(ped_can_count, by = "county") |>
+  full_join(ped_pln, by = "county") |>
+  full_join(bd_count, by = "county") |>
+  clean_names()
+
+```
+
+#chemical data
+```{r}
+ne_chem<- read_csv("ne_final_chem_widev5.csv") |>
+  rename(geoid10= "county_fips_code") |>
+  mutate(geoid10 = str_pad(as.character(geoid10), width = 3, pad = "0"),
+         geoid10 = paste0("31", geoid10))
+
+```
+
+
+# join chemicals, sdoh (percentage variables) and outcomes into a file
+```{r}
+fin_dat<- full_join(ne_chem, sdoh_outcms, by= "geoid10") |>
+  select(-c("geoid")) |>
+  mutate_at(vars(44:72), ~ replace_na(., 0))
+
+write_csv(fin_dat, "final_dissrt_analy_data.csv")
+```
+
+# join sdoh count data to the final_dissrt_analy_data for stratified analysis purpose
+
+```{r}
+dat1 <- read_csv("final_dissrt_analy_data.csv")
+dat2 <- read_csv("ped_sdohcount.csv")
+ 
+# 
+dat2 <- dat2 |>
+  select(-contains("...1"))
+
+#
+fin_dat1 <- full_join(dat1, dat2, by= "geoid10") |>
+  mutate_at(vars(73:82), ~ replace_na(., 0))
+
+write_csv(fin_dat1, "final_dissrt_analy_sdh_count_datav1.csv")
+
+ # Save same file as RDA 
+save(fin_dat1, file = "final_dissrt_analy_sdh_count_datav1.RDA")
+```
+
+#############################################################################
+```{r}
+pacman::p_load(tidyverse, janitor, gWQS)
+```
+
+# using data without sdoh counts
+```{r}
+dat<- read_csv("final_dissrt_analy_data.csv")
+```
+
+#gWQS model
+```{r, warning=FALSE}
+chem_mix<- names(dat)[2:33]
+
+wqs_res<- gwqs(ophthal ~ wqs+ m_blk_pct + f_blk_pct + m_hisp_pct + f_hisp_pct + m_heal_ins_pct + 
+                 f_heal_ins_pct +vehicle_pct + sing_pent_pct + ssi_snap_pct, 
+               mix_name = chem_mix, 
+               offset= dat$live_birth,
+               zero_infl = FALSE, #only for cancer sub-types
+               data = dat,
+               q=10, validation= 0.6, b = 10, 
+               b1_pos = TRUE, b1_constr = FALSE, 
+               family= "negbin", 
+               seed = 2023)
+```
+
+```{r}
+gwqs_scatterplot(wqs_res)
+gwqs_summary_tab(wqs_res)
+
+gwqs_barplot(wqs_res)
+gwqs_weights_tab(wqs_res)
+```
+
+#repeated holdout # try to use rs- subset term
+```{r, warning=FALSE}
+wqs_res_rh <- gwqsrh(cardiac ~ wqs+
+                       #Below are list of covariates included
+                       m_blk_pct + f_blk_pct + m_hisp_pct + f_hisp_pct + m_heal_ins_pct +
+                       f_heal_ins_pct +vehicle_pct + sing_pent_pct + ssi_snap_pct, 
+                     ###################
+                     mix_name = chem_mix, #list of pesticides as mixture
+                     ###################
+                     offset=dat$live_birth, #offset variable to yield rat
+                     ###################
+                     zero_infl = FALSE, #only for sub-types
+                     ###################
+                     data = dat, #input dataset
+                     ###################
+                     q=10, #Converting pesticides to quantile scale
+                     ###################
+                     validation= 0.6, #split 60% data for validation
+                     ###################
+                     b = 10, #considering 100 bootstrap samples
+                     ###################
+                     b1_pos = TRUE, #assuming beta as positive
+                     ###################
+                     b1_constr = FALSE, #Unconstrained beta direction
+                     ###################
+                     family= "negbin", # assuming outcome following negative binomial distribution
+                     ###################
+                     seed = 2023, #seed to reproduce the same test and training data
+                     ###################
+                     rh=5 #repeated holdouts
+                     ###################
+                     )
+```
+
+```{r}
+gwqs_summary_tab(wqs_res_rh)
+gwqsrh_boxplot(wqs_res_rh, tau = 0)
+gwqs_weights_tab(wqs_res_rh)
+
+#ggsave("gwqsrh_abdominal_bd.tiff", 
+       #width = 6,height = 9,
+       #dpi=300)
+```
+
+#loop function
+```{r}
+gwqs_loop <- function(input_df, output_folder, outcomes, covariates=NULL, 
+                      chem_mix) {
+  # Loop through the list of outcomes
+  for (outcome in outcomes) {
+    # Construct the formula with specified covariates
+    formula <- paste(outcome, "~ wqs ", covariates)
+    
+    # Create the file names based on the outcome and model type
+    filename_prefix <- "model_output"
+    file_name_wqs <- paste0("nrh", "_", outcome, ".rda")
+    file_name_wqs_rh <- paste0("rh", "_", outcome, ".rda")
+    
+    # Perform the first model (gWQS)
+    wqs_res <- tryCatch(
+      gwqs(as.formula(formula), mix_name = chem_mix, offset = dat$ped_popln,
+           zero_infl = FALSE, data = input_df, q = 10, validation = 0.6, b = 10,
+           b1_pos = TRUE, b1_constr = FALSE, family = "negbin", seed = 2023),
+      error = function(e) {
+        cat(paste("Error occurred for outcome:", outcome, "\n", "Error message:", e$message, "\n"))
+        return(NULL)
+      }
+    )
+    
+    if (is.null(wqs_res)) {
+      next  # Move to the next outcome variable
+    } else {
+      # Save the first model output to RDA file
+      save(wqs_res, file = file.path(output_folder, file_name_wqs))
+    }
+    
+    # Perform the second model (gWQSRH)
+    wqs_res_rh <- tryCatch(
+      gwqsrh(as.formula(formula), mix_name = chem_mix, offset = dat$ped_popln,
+             zero_infl = FALSE, data = input_df, q = 10, validation = 0.6, b = 100,
+             b1_pos = TRUE, b1_constr = FALSE, family = "negbin", seed = 2023, rh = 5),
+      error = function(e) {
+        cat(paste("Error occurred for outcome:", outcome, "\n", "Error message:", e$message, "\n"))
+        return(NULL)
+      }
+    )
+    
+    if (is.null(wqs_res_rh)) {
+      next  # Move to the next outcome variable
+    } else {
+      # Save the second model output to RDA file
+      save(wqs_res_rh, file = file.path(output_folder, file_name_wqs_rh))
+    }
+  }
+}
+
+
+```
+
+#run function
+```{r, warning=FALSE}
+
+gwqs_loop(input_df = dat,
+          output_folder = "~/Dissertation/test", 
+          outcomes = names(dat)[44:55],  #update location of outcomes
+          covariates = "+ m_blk_pct + f_blk_pct + m_hisp_pct + f_hisp_pct + m_heal_ins_pct + f_heal_ins_pct +vehicle_pct + sing_pent_pct + ssi_snap_pct ",
+          chem_mix = names(dat)[2:33])
+```
+
+# for each type select load the specific Rda file
+```{r}
+load("~/Dissertation/test/nrh_total_can.rda") 
+
+summary(wqs_res)
+gwqs_barplot(wqs_res)
+
+```
+
+
+```{r}
+load("~/Dissertation/test/rh_leukemia.rda") 
+
+summary(wqs_res_rh)
+gwqsrh_boxplot(wqs_res_rh)
+gwqs_weights_tab(wqs_res_rh)
+
+#
+ggsave("gwqsrh_leukemia.tiff", 
+       width = 6,height = 9,
+       dpi=300)
+```
+
+
+
